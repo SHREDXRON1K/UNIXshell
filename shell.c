@@ -11,10 +11,16 @@ int main() {
     char confirm[10];   // for confirmation when exiting
     //int input_size;
 
-    int i=0;
+    int i=0, j=0;
+
     int background = 0;
+    int pipe_exist = 0;
+    int pipefd[2];
 
     char *token_array[40];
+    char *token_array2[40];
+
+    pid_t child2;
 
     while (1) {
         printf("");
@@ -72,31 +78,74 @@ int main() {
             if(strcmp(token, "&") == 0){
                 background = 1;
             }
+            else if(strcmp(token, "|") == 0){
+                pipe_exist = 1;
+
+            }
             else{
-                token_array[i++] = token;
+                if(!pipe_exist) token_array[i++] = token;
+                if(pipe_exist) token_array2[j++] = token;
+                
             }
             token = strtok(NULL, " "); // iterate next token
         }
 
         token_array[i] = NULL;
+        token_array2[j] = NULL;
 
-        pid_t child = fork(); //make new child process
+        if(pipe_exist) pipe(pipefd);  // Create pipe once
 
-        if(child == 0) { // if child
-            printf("Child PID : %d\n", getpid());
+        pid_t child1 = fork();
+        if(child1 == 0) {
+            // Left side: `ls`
+            if(pipe_exist){
+                dup2(pipefd[1], STDOUT_FILENO);
+                close(pipefd[0]);  // Close unused read end
+                close(pipefd[1]);
+            }
+            printf("Child1 PID: %d\n", getpid());
             execvp(token_array[0], token_array);
-
             perror("execvp failed");
             exit(1);
         }
-        else if(child > 0){ //if parent
-            if(!background) waitpid(child, NULL, 0);
-            else printf("Starting backgroung process with PID : %d\n", child);
+
+        if(pipe_exist){
+            pid_t child2 = fork();
+            if(child2 == 0) {
+                // Right side: `wc -l`
+                dup2(pipefd[0], STDIN_FILENO);
+                close(pipefd[1]);  // Close unused write end
+                close(pipefd[0]);
+                printf("Child2 PID: %d\n", getpid());
+                execvp(token_array2[0], token_array2);
+                perror("execvp failed");
+                exit(1);
+            }
         }
 
-        memset(token_array, 0, sizeof(token_array));
+
+        if(pipe_exist){
+            close(pipefd[0]);
+            close(pipefd[1]);
+        }
+
+       
+        if(!background) {
+            waitpid(child1, NULL, 0);
+            if(pipe_exist) waitpid(child2, NULL, 0);
+        }
+        else {
+            printf("Starting background process with PID : %d\n", child1);
+            if(pipe_exist) printf("Starting background process with PID : %d\n", child2);
+        }
+
+
+        memset(token_array, 0, sizeof(token_array)); //clean token_array
+        memset(token_array2, 0, sizeof(token_array2));
         i=0;
+        j=0;
         background=0;
+        pipe_exist=0;
             
     }
 
