@@ -6,6 +6,33 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include <signal.h>
+
+#include <mqueue.h>
+#include <pthread.h>
+
+#define MQ_NAME "/cpuload"
+#define MSG_SIZE 64
+
+double current_cpu_load = 0.0;   // Updated by listener thread
+mqd_t cpu_mq;                    // Message queue descriptor
+
+
+void* cpu_listener_thread(void *arg) {
+    char buf[MSG_SIZE];
+
+    while (1) {
+        ssize_t bytes = mq_receive(cpu_mq, buf, MSG_SIZE, NULL);
+        if (bytes >= 0) {
+            current_cpu_load = atof(buf);  // convert "23.1" -> double
+        }
+    }
+
+    return NULL;
+}
+
+
+
 int main() {
     char input[100];    // for user commands
     char confirm[10];   // for confirmation when exiting
@@ -22,9 +49,35 @@ int main() {
 
     pid_t child2;
 
+    // pid_t new_process = fork();
+
+    // if(new_process == 0){ //set new process as group leader
+    //     printf("New Process PGID : %d\n", getpgid(0));
+    //     printf("New Process PID : %d\n", getpid());
+    //     setpgid(0,0);
+    //     printf("New Process PGID : %d\n", getpgid(0));
+    // }
+
+
+    pthread_t cpu_thread;
+
+    // Open POSIX MQ for reading
+    cpu_mq = mq_open(MQ_NAME, O_RDONLY);
+    if (cpu_mq == (mqd_t)-1) {
+        perror("mq_open /cpuload");
+        exit(1);
+    }
+
+    // Start listener thread
+    pthread_create(&cpu_thread, NULL, cpu_listener_thread, NULL);
+
+
+
+
     while (1) {
         printf("");
-        printf("MyShell$: ");
+        printf("MyShell [CPU %.1f%%]$ ", current_cpu_load);
+;
         
         // Read the full command line
         if (fgets(input, sizeof(input), stdin) == NULL) {
@@ -71,6 +124,33 @@ int main() {
             }
             continue;
         }
+        
+
+    if (strncmp(input, "stop ", 5) == 0) {
+        int pidToStop = atoi(input + 5);
+        if (pidToStop > 0) {
+            if (kill(pidToStop, SIGTSTP) == 0) printf("Sent SIGTSTP (stop) to PID %d\n", pidToStop);
+            else perror("Failed to send SIGTSTP");
+
+        } else {
+            printf("Invalid PID.\n");
+        }
+        continue;
+    }
+
+    if (strncmp(input, "cont ", 5) == 0) {
+        int pidToCont = atoi(input + 5);
+        if (pidToCont > 0) {
+            if (kill(pidToCont, SIGCONT) == 0) printf("Sent SIGCONT (continue) to PID %d\n", pidToCont);
+            else perror("Failed to send SIGCONT");
+            
+        } else {
+            printf("Invalid PID.\n");
+        }
+        continue;
+    }
+
+
 
         //Tokenizing
         char *token = strtok(input, " ");
@@ -79,7 +159,7 @@ int main() {
                 background = 1;
             }
             else if(strcmp(token, "|") == 0){
-                pipe_exist = 1;
+                pipe_exist++;
 
             }
             else{
@@ -93,7 +173,9 @@ int main() {
         token_array[i] = NULL;
         token_array2[j] = NULL;
 
-        if(pipe_exist) pipe(pipefd);  // Create pipe once
+        if(pipe_exist){
+            pipe(pipefd);  // Create pipe once
+        }
 
         pid_t child1 = fork();
         if(child1 == 0) {
@@ -102,8 +184,13 @@ int main() {
                 dup2(pipefd[1], STDOUT_FILENO);
                 close(pipefd[0]);  // Close unused read end
                 close(pipefd[1]);
+                pipe_exist--;
             }
             printf("Child1 PID: %d\n", getpid());
+            printf("Child1 PGID : %d\n", getpgid(0));
+            setpgid(0,0);
+            printf("Child1 PGID : %d\n", getpgid(0));
+
             execvp(token_array[0], token_array);
             perror("execvp failed");
             exit(1);
@@ -116,7 +203,13 @@ int main() {
                 dup2(pipefd[0], STDIN_FILENO);
                 close(pipefd[1]);  // Close unused write end
                 close(pipefd[0]);
+
                 printf("Child2 PID: %d\n", getpid());
+                printf("Child2 PGID : %d\n", getpgid(0));
+                setpgid(0,0);
+                printf("Child2 PGID : %d\n", getpgid(0));
+
+
                 execvp(token_array2[0], token_array2);
                 perror("execvp failed");
                 exit(1);
